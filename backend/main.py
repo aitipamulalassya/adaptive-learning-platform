@@ -39,7 +39,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 ENV_FILE = Path(__file__).resolve().parent.parent / ".env"
 
-load_dotenv(dotenv_path=ENV_FILE, override=True)
+load_dotenv(dotenv_path=ENV_FILE, override=false)
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 
