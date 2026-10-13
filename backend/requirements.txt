@@ -1,0 +1,10 @@
+fastapi
+uvicorn[standard]
+psycopg[binary]
+python-dotenv
+google-genai
+groq
+pypdf
+sentence-transformers
+python-multipart
+PyJWT>=2.10,<3

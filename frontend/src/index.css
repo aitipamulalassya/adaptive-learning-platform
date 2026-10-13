@@ -1,0 +1,21 @@
+@import "tailwindcss";
+@custom-variant dark (&:where(.dark, .dark *));
+
+:root { font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color-scheme: light; font-synthesis: none; text-rendering: optimizeLegibility; -webkit-font-smoothing: antialiased; }
+:root.dark { color-scheme: dark; }
+* { box-sizing: border-box; }
+html { min-width: 320px; min-height: 100%; background: #f7f8fc; }
+html.dark { background: #0b1020; }
+body { margin: 0; min-width: 320px; min-height: 100vh; }
+button, input { font: inherit; }
+button { -webkit-tap-highlight-color: transparent; }
+button:focus-visible, input:focus-visible { outline: 3px solid rgba(99, 102, 241, .45); outline-offset: 2px; }
+::selection { background: rgba(99, 102, 241, .22); }
+.dark .app-shell .bg-white { background-color: #111827 !important; }
+.dark .app-shell .bg-slate-50 { background-color: #0f172a !important; }
+.dark .app-shell .bg-slate-100 { background-color: #1e293b !important; }
+.dark .app-shell .text-slate-900, .dark .app-shell .text-slate-800, .dark .app-shell .text-slate-700 { color: #e5e7eb !important; }
+.dark .app-shell .text-slate-600, .dark .app-shell .text-slate-500 { color: #aab4c5 !important; }
+.dark .app-shell .border-slate-200, .dark .app-shell .border-slate-300 { border-color: #293548 !important; }
+.dark .app-shell .divide-slate-200 > :not([hidden]) ~ :not([hidden]) { border-color: #293548 !important; }
+.dark .app-shell .hover\:bg-slate-100:hover { background-color: #1e293b !important; }
