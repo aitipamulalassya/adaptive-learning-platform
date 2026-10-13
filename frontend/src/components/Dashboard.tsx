@@ -66,21 +66,6 @@ const API_BASE_URL =
 
 
 
-function formatDuration(seconds: number) {
-
-  if (!seconds || seconds <= 0) return "0 min";
-
-  const minutes = Math.round(seconds / 60);
-
-  if (minutes < 60) return `${minutes} min`;
-
-  const hours = Math.floor(minutes / 60);
-
-  const remainingMinutes = minutes % 60;
-
-  return remainingMinutes ? `${hours}h ${remainingMinutes}m` : `${hours}h`;
-
-}
 
 
 
