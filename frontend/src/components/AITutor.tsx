@@ -3,7 +3,7 @@ import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import {
 
-  ArrowLeft,
+  
 
   BrainCircuit,
 
@@ -103,7 +103,7 @@ const suggestions = [
 
 export default function AITutor({
 
-  onBack,
+
 
   studentId,
 
