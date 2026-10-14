@@ -642,19 +642,7 @@ async function handleSubmit(
 
           </div>
 
-          <button
-
-            onClick={onBack}
-
-            className="flex items-center gap-2 border-t border-slate-200 p-4 text-sm text-slate-600 hover:text-indigo-600"
-
-          >
-
-            <ArrowLeft size={16} />
-
-            Back to Dashboard
-
-          </button>
+          
 
         </aside>
 
