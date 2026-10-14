@@ -1,14 +1,14 @@
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react'
 import Sidebar from './components/Sidebar';
-import { Menu } from 'lucide-react';
+import AppHeader from './components/AppHeader';
 import {
   ArrowLeft, ArrowRight, Atom, BookOpen, Brain, CheckCircle2, ChevronRight,
-  CircleHelp, FileText, FlaskConical, GraduationCap, LoaderCircle, RotateCcw,
+  CircleHelp, FileText, FlaskConical, LoaderCircle, RotateCcw,
   Send, Target, Timer, Trophy, XCircle,
 } from 'lucide-react'
 import Dashboard from './components/Dashboard'
 import AITutor from './components/AITutor'
-import { useAuth, ThemeToggle, navigate, usePathname, AuthPage, ForgotPasswordPage, ResetPasswordPage } from './auth'
+import { useAuth, navigate, usePathname, AuthPage, ForgotPasswordPage, ResetPasswordPage } from './auth'
 import ProfilePage from './ProfilePage'
 import {
   generateTest, getCatalog, getExistingFullMock,
@@ -23,6 +23,7 @@ type Screen =
   | 'subjects'
   | 'ai-tutor'
     | "history"
+     | 'profile'
   | 'topic'
   | 'configure'
   | 'taking'
@@ -30,10 +31,10 @@ type Screen =
 type Difficulty = 'easy' | 'medium' | 'hard' | 'recommended'
 type TestMode = 'existing' | 'ai'
 
-const routeForScreen: Record<Screen, string> = { dashboard: 'dashboard', home: 'tests', 'full-mock': 'tests/full-mock', subjects: 'subjects', 'ai-tutor': 'tutor', history: 'history', topic: 'subjects/topic', configure: 'tests/configure', taking: 'tests/active', results: 'tests/results' }
+const routeForScreen: Record<Screen, string> = { dashboard: 'dashboard', home: 'tests', 'full-mock': 'tests/full-mock',   profile: 'profile',subjects: 'subjects', 'ai-tutor': 'tutor', history: 'history', topic: 'subjects/topic', configure: 'tests/configure', taking: 'tests/active', results: 'tests/results' }
 function screenFromPath(pathname: string): Screen {
   const route = pathname.replace(/^\/app\/?/, '')
-  const routeMap: Record<string, Screen> = { dashboard: 'dashboard', tests: 'home', 'tests/full-mock': 'full-mock', 'tests/configure': 'configure', 'tests/active': 'taking', 'tests/results': 'results', subjects: 'subjects', 'subjects/topic': 'topic', tutor: 'ai-tutor', history: 'history' }
+  const routeMap: Record<string, Screen> = { dashboard: 'dashboard', tests: 'home',  profile: 'profile', 'tests/full-mock': 'full-mock', 'tests/configure': 'configure', 'tests/active': 'taking', 'tests/results': 'results', subjects: 'subjects', 'subjects/topic': 'topic', tutor: 'ai-tutor', history: 'history' }
   return routeMap[route] ?? 'dashboard'
 }
 
@@ -333,6 +334,7 @@ const pageTitle: Record<Screen, string> = {
   dashboard: 'Dashboard',
   'ai-tutor': 'AI Tutor',
   history: 'Test History',
+   profile: '',
   subjects: 'Subject Tests',
   topic: selectedTopic?.name ?? 'Choose a topic',
   configure: 'Configure your test',
@@ -343,32 +345,20 @@ const pageTitle: Record<Screen, string> = {
 
   return (
     <div className="app-shell min-h-screen bg-slate-50 text-slate-800 dark:bg-slate-950 dark:text-slate-100">
-      <header className="sticky top-0 z-20 border-b border-slate-200 bg-white/95 backdrop-blur dark:border-slate-800 dark:bg-slate-900/95">
-        <div className="mx-auto flex max-w-7xl items-center justify-between px-4 py-4 sm:px-6 lg:px-8">
-          <button
-  type="button"
-  onClick={() => setSidebarOpen(true)}
-  aria-label="Open navigation menu"
-  aria-expanded={sidebarOpen}
-  className="rounded-xl border border-slate-200 p-2 text-slate-600 hover:bg-slate-100 dark:border-slate-700 dark:text-slate-200 dark:hover:bg-slate-800 lg:hidden"
->
-  <Menu size={22} />
-</button> 
-<button onClick={() => setScreen('dashboard')} className="flex items-center gap-3 text-left">
-            <span className="flex h-11 w-11 items-center justify-center rounded-2xl bg-indigo-600 text-white"><Brain size={24} /></span>
-            <span><span className="block text-lg font-bold tracking-tight">AdaptiveLearning</span><span className="block text-xs text-slate-500">Learn at your own pace</span></span>
-          </button>
-          <div className="flex items-center gap-2"><div className="hidden items-center gap-2 text-sm text-slate-500 sm:flex"><GraduationCap size={18} /> {user?.name ?? 'Student workspace'}</div><button type="button" onClick={() => navigate('/app/profile')} className="rounded-xl border border-slate-200 px-3 py-2 text-sm font-semibold text-slate-600 transition hover:bg-slate-100 dark:border-slate-700 dark:text-slate-200 dark:hover:bg-slate-800">Profile</button><ThemeToggle compact/><button type="button" onClick={() => void signOut()} className="rounded-xl border border-slate-200 px-3 py-2 text-sm font-semibold text-slate-600 transition hover:bg-slate-100 dark:border-slate-700 dark:text-slate-200 dark:hover:bg-slate-800">Sign out</button></div>
-        </div>
-      </header>
-<div className="flex">
+      <AppHeader
+        userName={user?.name}
+        sidebarOpen={sidebarOpen}
+        onOpenSidebar={() => setSidebarOpen(true)}
+        onSignOut={signOut}
+      />
+<div className="min-h-[calc(100vh-72px)]">
   <Sidebar
     open={sidebarOpen}
     onClose={() => setSidebarOpen(false)}
     currentPath={window.location.pathname}
   />
-      <main className="min-w-0 flex-1 px-4 py-7 sm:px-6 lg:px-8 lg:ml-72">
-        {screen !== 'dashboard' && screen !== 'taking' && screen !== 'results' && (
+      <main className="mx-auto min-w-0 w-full px-4 py-6 sm:px-6 sm:py-8 lg:ml-72 lg:w-[calc(100%-18rem)] lg:px-8 xl:px-10">
+        {screen !== 'dashboard' && screen !== 'taking' && screen !== 'results' &&screen !=='profile' && (
           <button 
 onClick={() => {
   setError('')
@@ -388,7 +378,7 @@ onClick={() => {
     setScreen(selectedTopic ? 'topic' : 'full-mock')
   }
 }}
- className="mb-5 inline-flex items-center gap-2 text-sm font-semibold text-slate-600 hover:text-indigo-700">
+ className="inline-flex items-center gap-2 text-sm font-semibold text-slate-600 hover:text-indigo-700">
             <ArrowLeft size={16} /> Back
           </button>
         )}
@@ -409,7 +399,7 @@ onClick={() => {
           <div className="mb-5 flex items-center gap-2 rounded-xl bg-indigo-50 p-3 text-sm text-indigo-700"><LoaderCircle size={17} className="animate-spin"/> Connecting to AdaptiveLearning backend…</div>
         )}
 {screen === 'dashboard' && <Dashboard studentId={studentId} />}
-
+{screen === 'profile' && <ProfilePage />}
 {screen === 'history' && (
   <section className="space-y-6">
     {/* Page heading */}
@@ -833,7 +823,7 @@ onClick={() => {
         )}
       </main>
       </div>
-      <footer className="mt-12 border-t border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900"><div className="mx-auto flex max-w-7xl flex-wrap items-center justify-between gap-3 px-4 py-5 text-xs text-slate-500 sm:px-6 lg:px-8"><span>AdaptiveLearning · Personalized practice</span><span>Questions and scores are processed by the backend</span></div></footer>
+     
     </div>
   )
 }
@@ -873,7 +863,7 @@ function App() {
   useEffect(() => {
     if (!ready) return
     if (path === '/' || path === '/signin' || path === '/signup') {
-      if (user) navigate('/app')
+      if (user) navigate('/app/dashboard')
       else if (path === '/') navigate('/signin')
     } else if (path.startsWith('/app') && (!user)) {
       navigate('/signin')
@@ -886,8 +876,9 @@ function App() {
   if (path === '/signup') return <AuthPage mode="signup" />
   if (path === '/forgot-password') return <ForgotPasswordPage />
   if (path.startsWith('/reset-password')) return <ResetPasswordPage />
-  if (path === '/app/profile' && user) return <ProfilePage />
+ 
   if (path.startsWith('/app') && user) return <LearningApp />
+  
   return <div className="route-loading"><span className="loader-dot"/>Redirecting…</div>
 }
 
