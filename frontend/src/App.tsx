@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react'
+import Sidebar from './components/Sidebar';
+import { Menu } from 'lucide-react';
 import {
   ArrowLeft, ArrowRight, Atom, BookOpen, Brain, CheckCircle2, ChevronRight,
   CircleHelp, FileText, FlaskConical, GraduationCap, LoaderCircle, RotateCcw,
@@ -88,7 +90,7 @@ function LearningApp() {
 const [testHistory, setTestHistory] = useState<TestHistoryItem[]>([]);
 const [historyLoading, setHistoryLoading] = useState(false);
 const [historyError, setHistoryError] = useState("");
-
+const [sidebarOpen, setSidebarOpen] = useState(false);
   const [results, setResults] = useState<SubmissionResult | null>(null)
   
 
@@ -343,15 +345,29 @@ const pageTitle: Record<Screen, string> = {
     <div className="app-shell min-h-screen bg-slate-50 text-slate-800 dark:bg-slate-950 dark:text-slate-100">
       <header className="sticky top-0 z-20 border-b border-slate-200 bg-white/95 backdrop-blur dark:border-slate-800 dark:bg-slate-900/95">
         <div className="mx-auto flex max-w-7xl items-center justify-between px-4 py-4 sm:px-6 lg:px-8">
-          <button onClick={() => setScreen('dashboard')} className="flex items-center gap-3 text-left">
+          <button
+  type="button"
+  onClick={() => setSidebarOpen(true)}
+  aria-label="Open navigation menu"
+  aria-expanded={sidebarOpen}
+  className="rounded-xl border border-slate-200 p-2 text-slate-600 hover:bg-slate-100 dark:border-slate-700 dark:text-slate-200 dark:hover:bg-slate-800 lg:hidden"
+>
+  <Menu size={22} />
+</button> 
+<button onClick={() => setScreen('dashboard')} className="flex items-center gap-3 text-left">
             <span className="flex h-11 w-11 items-center justify-center rounded-2xl bg-indigo-600 text-white"><Brain size={24} /></span>
             <span><span className="block text-lg font-bold tracking-tight">AdaptiveLearning</span><span className="block text-xs text-slate-500">Learn at your own pace</span></span>
           </button>
           <div className="flex items-center gap-2"><div className="hidden items-center gap-2 text-sm text-slate-500 sm:flex"><GraduationCap size={18} /> {user?.name ?? 'Student workspace'}</div><button type="button" onClick={() => navigate('/app/profile')} className="rounded-xl border border-slate-200 px-3 py-2 text-sm font-semibold text-slate-600 transition hover:bg-slate-100 dark:border-slate-700 dark:text-slate-200 dark:hover:bg-slate-800">Profile</button><ThemeToggle compact/><button type="button" onClick={() => void signOut()} className="rounded-xl border border-slate-200 px-3 py-2 text-sm font-semibold text-slate-600 transition hover:bg-slate-100 dark:border-slate-700 dark:text-slate-200 dark:hover:bg-slate-800">Sign out</button></div>
         </div>
       </header>
-
-      <main className="mx-auto max-w-7xl px-4 py-7 sm:px-6 lg:px-8">
+<div className="flex">
+  <Sidebar
+    open={sidebarOpen}
+    onClose={() => setSidebarOpen(false)}
+    currentPath={window.location.pathname}
+  />
+      <main className="min-w-0 flex-1 px-4 py-7 sm:px-6 lg:px-8 lg:ml-72">
         {screen !== 'dashboard' && screen !== 'taking' && screen !== 'results' && (
           <button 
 onClick={() => {
@@ -816,6 +832,7 @@ onClick={() => {
           </div>
         )}
       </main>
+      </div>
       <footer className="mt-12 border-t border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900"><div className="mx-auto flex max-w-7xl flex-wrap items-center justify-between gap-3 px-4 py-5 text-xs text-slate-500 sm:px-6 lg:px-8"><span>AdaptiveLearning · Personalized practice</span><span>Questions and scores are processed by the backend</span></div></footer>
     </div>
   )
