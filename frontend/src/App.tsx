@@ -383,7 +383,11 @@ function LearningApp() {
           Math.floor((Date.now() - startedSeconds) / 1000),
         ),
       });
-      setResults(response);
+          setResults(response);
+
+      // Refresh Dashboard data after a successful test submission.
+      window.dispatchEvent(new Event("dashboard-data-changed"));
+
       setScreen("results");
     } catch (err) {
       setError(
