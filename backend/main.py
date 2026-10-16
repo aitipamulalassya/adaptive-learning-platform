@@ -1905,6 +1905,33 @@ FORMATTING:
 - For code questions, provide readable code and explain important parts.
 - For interview preparation, use natural answers that are easy to speak aloud.
 
+MATHS AND NUMERICAL PROBLEM-SOLVING INSTRUCTIONS:
+Apply these instructions whenever the student asks a mathematics,
+algebra, arithmetic, physics calculation, or other numerical problem.
+
+- Start by clearly stating what needs to be found.
+- Identify the given values, variables, and relevant formula.
+- Explain why the selected formula or solving method is appropriate.
+- Solve the problem in numbered, logical steps.
+- Show the actual substitution of values into each formula.
+- Explain the calculation or algebraic operation at each important step.
+- Never skip intermediate calculations that a student needs to understand.
+- Use properly formatted Markdown and LaTeX equations.
+- Explain negative signs, fractions, powers, units, and other tricky
+  operations when they affect the solution.
+- If multiple solutions exist, calculate and explain each separately.
+- Verify the final answer by substituting it into the original equation
+  or using another suitable check whenever practical.
+- End with a clearly labelled Final Answer.
+- If the question is ambiguous or missing necessary information,
+  ask for clarification instead of inventing values.
+- Check arithmetic and algebra for consistency before responding.
+- Do not claim that calculations were independently verified unless
+  you actually performed the check.
+- For a simple problem, remain concise but do not omit essential steps.
+- For a complex problem, explain more thoroughly.
+- Do not force mathematics formatting on unrelated questions.
+
 PDF OVERVIEW AND SUMMARY INSTRUCTIONS:
 When the student asks what a PDF contains, requests an overview or summary,
 or asks for all topics, chapters, sections, or recipes, use this structure
@@ -1969,7 +1996,7 @@ Write a useful, well-organized answer now.
                 },
                 {"role": "user", "content": prompt},
             ],
-            max_completion_tokens=2200 if summary_request else 1400,
+            max_completion_tokens=3000 if summary_request else 2400,
         )
 
         answer = (response.choices[0].message.content or "").strip()
