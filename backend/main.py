@@ -183,12 +183,16 @@ def retrieve_relevant_chunks(
 
     ]
 
+
+SUMMARY_MAX_CHUNKS = int(os.getenv("SUMMARY_MAX_CHUNKS", "120"))
+
+
 def retrieve_chat_document_chunks(
     student_id: int,
     chat_id: int,
-    limit: int = 80,
+    limit: int = SUMMARY_MAX_CHUNKS,
 ) -> list[dict]:
-    """Retrieve stored PDF chunks in document/page order for summarization."""
+    """Retrieve PDF chunks in document and page order for summaries."""
 
     with get_connection() as connection:
         rows = connection.execute(
@@ -199,7 +203,8 @@ def retrieve_chat_document_chunks(
                 dc.chunk_index,
                 d.id AS document_id,
                 d.document_name,
-                0.0::float AS similarity
+                0.0::float AS similarity,
+                COUNT(*) OVER() AS total_chunks
             FROM public.document_chunks dc
             JOIN public.documents d
                 ON d.id = dc.document_id
@@ -1735,24 +1740,28 @@ def ask_ai_tutor(request: TutorQuestion):
 
         )
 
-    # 2. Retrieve relevant passages from the student's documents.
-
-   
-    # 2. Detect broad document-summary requests.
-    question_lower = request.question.lower()
-
+    # 2. Detect broad document-summary and contents requests.
+    question_lower = request.question.lower().strip()
     summary_request = bool(
         re.search(
-            r"\b(summarize|summarise|summary|overview|"
-            r"what is in|what's in|what is there in|"
-            r"what's inside|contents of|"
-            r"explain this pdf|describe this document)\b",
+            r"\b("
+            r"summarize|summarise|summary|overview|"
+            r"what is in|what's in|what does .* contain|"
+            r"what is there in|what's inside|"
+            r"contents of|table of contents|"
+            r"explain this pdf|explain this document|"
+            r"describe this document|"
+            r"list all topics|list the topics|"
+            r"all topics|all chapters|all sections|"
+            r"what topics are covered|"
+            r"what recipes are included|"
+            r"what does this document cover"
+            r")\b",
             question_lower,
         )
     )
 
-    retrieved_chunks = []
-
+    relevant_chunks = []
     if request.student_id is not None:
         if request.chat_id is None:
             raise HTTPException(
@@ -1762,14 +1771,12 @@ def ask_ai_tutor(request: TutorQuestion):
 
         try:
             if summary_request:
-                # Summaries should use document content in page order.
-                retrieved_chunks = retrieve_chat_document_chunks(
+                relevant_chunks = retrieve_chat_document_chunks(
                     student_id=request.student_id,
                     chat_id=request.chat_id,
                 )
             else:
-                # Normal questions continue using semantic search.
-                retrieved_chunks = retrieve_relevant_chunks(
+                relevant_chunks = retrieve_relevant_chunks(
                     question=request.question,
                     student_id=request.student_id,
                     chat_id=request.chat_id,
@@ -1786,117 +1793,155 @@ def ask_ai_tutor(request: TutorQuestion):
                 detail="Document retrieval failed. Check backend logs.",
             ) from exc
 
-    if summary_request:
-        # Do not discard document passages using a similarity threshold.
-        relevant_chunks = retrieved_chunks
-    else:
-    
-    # Use the best matching passages returned by semantic search.
-    # Do not discard every passage just because its score is below 0.30.
-        relevant_chunks = retrieved_chunks
-
-   
-
-    
-
-    # 3. Build evidence and structured sources from retrieved chunks.
-
-    document_context_parts = []
-
-    sources = []
-
-    seen_sources = set()
-
-    for chunk in relevant_chunks:
-
-        document_context_parts.append(
-
-            f"""
-
-Document: {chunk["document_name"]}
-
-Page: {chunk["page_number"]}
-
-Passage:
-
-{chunk["chunk_text"]}
-
-"""
-
-        )
-
-        source_key = (
-
-            chunk["document_id"],
-
-            chunk["page_number"],
-
-        )
-
-        if source_key not in seen_sources:
-
-            seen_sources.add(source_key)
-
-            sources.append({
-
-                "document_id": chunk["document_id"],
-
-                "document_name": chunk["document_name"],
-
-                "page_number": chunk["page_number"],
-
-                "similarity": round(chunk["similarity"], 4),
-
-            })
-
-    document_context = (
-
-        "\n".join(document_context_parts)
-
-        if document_context_parts
-
-        else "No sufficiently relevant passages were retrieved."
-
+    total_available_chunks = (
+        int(relevant_chunks[0].get("total_chunks", len(relevant_chunks)))
+        if summary_request and relevant_chunks
+        else len(relevant_chunks)
     )
 
-    # 4. Ask Gemini to answer using evidence without inventing citations.
+    summary_coverage_note = ""
+    if summary_request:
+        if not relevant_chunks:
+            summary_coverage_note = (
+                "No processed PDF passages were retrieved. "
+                "Do not pretend to have read the document."
+            )
+        elif len(relevant_chunks) < total_available_chunks:
+            summary_coverage_note = (
+                f"Only {len(relevant_chunks)} of {total_available_chunks} "
+                "available chunks were retrieved. The document content may "
+                "be incomplete. Do not claim that any list is exhaustive "
+                "unless the retrieved evidence supports that claim. Tell the "
+                "student when relevant content may be missing."
+            )
+        else:
+            summary_coverage_note = (
+                "All currently stored chunks for the matching processed "
+                "documents were retrieved."
+            )
+
+    # 3. Build bounded evidence and source references.
+    # Groq has an 8,000-token-per-minute limit on the current tier.
+    # Keep the prompt context small enough to leave room for instructions and output.
+    MAX_DOCUMENT_CONTEXT_CHARS = int(os.getenv("AI_TUTOR_MAX_CONTEXT_CHARS", "9000"))
+    MAX_HISTORY_CHARS = int(os.getenv("AI_TUTOR_MAX_HISTORY_CHARS", "1800"))
+
+    history_text = history_text[-MAX_HISTORY_CHARS:]
+
+    document_context_parts = []
+    sources = []
+    seen_sources = set()
+    context_chars_used = 0
+    included_chunks = 0
+
+    for chunk in relevant_chunks:
+        passage = (
+            f"Document: {chunk['document_name']}\\n"
+            f"Page: {chunk['page_number']}\\n"
+            f"Passage:\\n{chunk['chunk_text']}"
+        )
+        remaining = MAX_DOCUMENT_CONTEXT_CHARS - context_chars_used
+        if remaining <= 0:
+            break
+        if len(passage) > remaining:
+            # Include a bounded portion of the last passage rather than exceeding the budget.
+            passage = passage[:remaining]
+        if not passage.strip():
+            break
+
+        document_context_parts.append(passage)
+        context_chars_used += len(passage) + 2
+        included_chunks += 1
+
+        source_key = (chunk["document_id"], chunk["page_number"])
+        if source_key not in seen_sources:
+            seen_sources.add(source_key)
+            sources.append(
+                {
+                    "document_id": chunk["document_id"],
+                    "document_name": chunk["document_name"],
+                    "page_number": chunk["page_number"],
+                    "similarity": round(float(chunk.get("similarity", 0.0)), 4),
+                }
+            )
+
+    document_context = (
+        "\\n\\n".join(document_context_parts)
+        if document_context_parts
+        else "No sufficiently relevant passages were retrieved."
+    )
+
+    # If evidence was trimmed to fit the token budget, tell the model not to
+    # imply that it has reviewed the entire document.
+    if included_chunks < len(relevant_chunks):
+        summary_coverage_note = (
+            (summary_coverage_note + " ") if summary_coverage_note else ""
+        ) + (
+            f"Prompt size was limited to {included_chunks} of "
+            f"{len(relevant_chunks)} retrieved chunks. The answer may not cover "
+            "every part of the PDF; be explicit about this limitation."
+        )
+
+
+    # 4. Ask Groq to answer using evidence without inventing citations.
     prompt = f"""
 You are AdaptiveLearning AI, a friendly and intelligent learning assistant.
 
-PERSONALITY AND STYLE:
-- Be natural, clear, supportive, and conversational.
+GENERAL BEHAVIOUR:
 - Answer the student's actual question directly.
-- Avoid unnecessary introductions such as "I'd be happy to help".
-- Do not repeat the question before answering.
-- Use simple language and explain technical concepts with examples.
-- Keep simple answers short; provide detail when the question requires it.
-- Adapt the response to the student's intent and level of understanding.
+- Use simple, clear language appropriate for a student.
+- Avoid unnecessary introductions and repeating the question.
+- Use only evidence supported by the retrieved passages for claims about the uploaded PDF.
+- Never invent document contents, examples, quotations, or page numbers.
+- If evidence is missing or incomplete, explain the limitation honestly.
+- Distinguish document claims from established facts.
 
 FORMATTING:
-- Use Markdown formatting only when it improves readability.
-- Use short headings for long answers.
-- Use bullet points for lists and numbered steps for procedures.
-- Use bold text sparingly to highlight important terms.
-- Avoid excessive headings, separators, blockquotes, and long paragraphs.
-- Never display raw Markdown escape sequences unnecessarily.
-- For code questions, provide readable code and explain the important parts.
-- For interview preparation, provide natural answers that are easy to speak aloud.
+- Use Markdown headings and numbered sections when useful.
+- Use bullet points for explanations and numbered lists for ordered items.
+- Use tables for lists or comparisons when they improve readability.
+- Keep paragraphs concise and avoid excessive headings.
+- For simple factual questions, answer directly without forcing a long summary.
+- For code questions, provide readable code and explain important parts.
+- For interview preparation, use natural answers that are easy to speak aloud.
 
-DOCUMENT EVIDENCE:
-- Use retrieved PDF passages when answering questions about the uploaded material.
-- For document-based answers, cite supported claims as
-  [document_name, p. page_number].
-- Never invent quotations, facts, filenames, or page references.
-- If the PDF contains the answer, prioritize its information.
-- If the question asks for a summary, summarize the available passages
-  in a logical order.
-- If the question asks for an answer based on a résumé, use the résumé
-  to personalize the answer and do not invent qualifications or experience.
-- If the retrieved passages do not support an answer, explain that clearly.
-- When using general knowledge beyond the PDF, distinguish it from
-  information found in the document.
+PDF OVERVIEW AND SUMMARY INSTRUCTIONS:
+When the student asks what a PDF contains, requests an overview or summary,
+or asks for all topics, chapters, sections, or recipes, use this structure
+where the retrieved evidence supports it:
+
+1. What the PDF contains
+   - Identify the document title and purpose if available.
+   - Briefly describe its main subject and coverage.
+2. Main topics
+   - Organize the important content into numbered sections.
+   - Explain each topic concisely.
+3. What is included?
+   - List topics, chapters, recipes, or categories found in the contents page
+     or other retrieved evidence.
+   - Preserve the source's names and ordering where possible.
+   - Do not call the list complete if the evidence is incomplete.
+   - If the contents page was not retrieved, say so instead of inventing a list.
+4. What else does it explain?
+   - Mention other relevant sections, instructions, or guidance.
+5. Example from the PDF
+   - Give at least one specific example supported by the passages.
+   - Include ingredients, steps, or explanations only when available.
+6. Important notes
+   - Include relevant precautions, warnings, limitations, or caveats stated in the source.
+
+PAGE REFERENCES AND EVIDENCE:
+- Cite supported document claims as [document_name, p. page_number].
+- Use page numbers supplied with each retrieved passage.
+- Do not invent page references.
+- If only part of the document was retrieved, disclose that limitation.
+- Do not present a document's health, scientific, or other claims as proven
+  facts unless the evidence supports that conclusion.
 
 SUBJECT: {request.subject}
+
+SUMMARY RETRIEVAL COVERAGE:
+{summary_coverage_note if summary_request else "Normal question retrieval."}
 
 RETRIEVED DOCUMENT PASSAGES:
 {document_context}
@@ -1907,30 +1952,27 @@ SAVED CONVERSATION HISTORY:
 STUDENT'S LATEST QUESTION:
 {request.question}
 
-Write the answer now. Make it directly useful to the student.
+Write a useful, well-organized answer now.
 """
+
     try:
         client = Groq(api_key=GROQ_API_KEY)
-
         response = client.chat.completions.create(
             model=GROQ_MODEL,
             messages=[
                 {
                     "role": "system",
                     "content": (
-                        "You are a helpful AI tutor. Follow the "
-                        "instructions and evidence in the user prompt."
+                        "You are a helpful AI tutor. Follow the instructions "
+                        "and evidence in the user prompt."
                     ),
                 },
                 {"role": "user", "content": prompt},
             ],
-            max_completion_tokens=1800,
+            max_completion_tokens=2200 if summary_request else 1400,
         )
 
-        answer = (
-            response.choices[0].message.content or ""
-        ).strip()
-
+        answer = (response.choices[0].message.content or "").strip()
         if not answer:
             raise HTTPException(
                 status_code=502,
@@ -1947,10 +1989,8 @@ Write the answer now. Make it directly useful to the student.
 
     except HTTPException:
         raise
-
     except Exception as exc:
         print(f"Groq tutor request failed: {type(exc).__name__}: {exc}")
-
         raise HTTPException(
             status_code=502,
             detail="The AI tutor could not generate a response. Check the backend logs.",
