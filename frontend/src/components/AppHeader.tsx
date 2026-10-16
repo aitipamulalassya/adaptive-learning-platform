@@ -1,6 +1,7 @@
 import { Brain, GraduationCap, Menu } from 'lucide-react';
-import { ThemeToggle, navigate } from '../auth';
+import { ThemeToggle} from '../auth';
 
+import { useNavigate } from 'react-router-dom';
 type AppHeaderProps = {
   userName?: string;
   sidebarOpen: boolean;
@@ -9,6 +10,7 @@ type AppHeaderProps = {
 };
 
 export default function AppHeader({ userName, sidebarOpen, onOpenSidebar, onSignOut }: AppHeaderProps) {
+  const navigate = useNavigate();
   return (
     <header className="sticky top-0 z-40 border-b border-slate-200/80 bg-white/90 backdrop-blur-xl dark:border-slate-800 dark:bg-slate-900/90">
       <div className="flex h-[72px] items-center gap-3 px-4 sm:px-6 lg:px-8">

@@ -8,41 +8,62 @@ export interface TestResult { question_id: number; question_text: string; option
 export interface SubmissionResult { attempt_id: number; assessment_id: number; title: string; score: number; correct_answers: number; incorrect_answers: number; unanswered: number; total_questions: number; duration_seconds: number; results: TestResult[] }
 export interface AuthUser { id: number; name: string; email: string }
 export interface AuthResponse { student: AuthUser }
-function readCookie(name: string): string | null {
-  const prefix = `${name}=`
-  const item = document.cookie.split('; ').find((part) => part.startsWith(prefix))
-  return item ? decodeURIComponent(item.slice(prefix.length)) : null
-}
-async function csrfHeaders(method = 'GET'): Promise<Record<string, string>> {
-  if (['GET', 'HEAD', 'OPTIONS'].includes(method.toUpperCase())) return {}
-  let csrf = readCookie('adaptive_csrf')
-  if (!csrf) {
-    const response = await fetch(`${API_BASE_URL}/auth/csrf`, { credentials: 'include' })
-    if (!response.ok) throw new Error('Could not initialize secure request. Refresh and try again.')
-    const payload = await response.json().catch(() => ({}))
-    csrf = payload.csrf_token || readCookie('adaptive_csrf')
-  }
-  if (!csrf) throw new Error('Could not initialize CSRF protection. Check that frontend and backend use the same hostname.')
-  return { 'X-CSRF-Token': csrf }
-}
+
+
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const method = (init?.method || 'GET').toUpperCase()
-  const csrf = await csrfHeaders(method)
-  const makeRequest = (csrfHeadersValue: Record<string, string>) => fetch(`${API_BASE_URL}${path}`, { ...init, credentials: 'include', headers: { ...(init?.body ? { 'Content-Type': 'application/json' } : {}), ...csrfHeadersValue, ...init?.headers } })
-  let response = await makeRequest(csrf)
-  const authPaths = ['/auth/signin', '/auth/signup', '/auth/refresh', '/auth/forgot-password', '/auth/reset-password']
+  const makeRequest = () =>
+    fetch(`${API_BASE_URL}${path}`, {
+      ...init,
+      credentials: 'include',
+      headers: {
+        ...(init?.body ? { 'Content-Type': 'application/json' } : {}),
+        ...init?.headers,
+      },
+    })
+
+  let response = await makeRequest()
+
+  const authPaths = [
+    '/auth/signin',
+    '/auth/signup',
+    '/auth/refresh',
+    '/auth/forgot-password',
+    '/auth/reset-password',
+  ]
+
   if (response.status === 401 && !authPaths.includes(path)) {
-    const refreshCsrf = await csrfHeaders('POST')
-    const refreshed = await fetch(`${API_BASE_URL}/auth/refresh`, { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json', ...refreshCsrf }, body: JSON.stringify({}) })
-    if (refreshed.ok) response = await makeRequest(await csrfHeaders(method))
+    const refreshed = await fetch(`${API_BASE_URL}/auth/refresh`, {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+    })
+
+    if (refreshed.ok) {
+      response = await makeRequest()
+    }
   }
+
   const data = await response.json().catch(() => ({}))
-  if (!response.ok) throw new Error(data.detail || `Request failed (${response.status})`)
+
+  if (!response.ok) {
+    throw new Error(data.detail || `Request failed (${response.status})`)
+  }
+
   return data as T
 }
+
 export async function authSignIn(payload: { email: string; password: string }) { return request<AuthResponse>('/auth/signin', { method: 'POST', body: JSON.stringify(payload) }) }
 export async function authSignUp(payload: { name: string; email: string; password: string }) { return request<AuthResponse>('/auth/signup', { method: 'POST', body: JSON.stringify(payload) }) }
-export async function authMe() { return request<AuthResponse>('/auth/me') }
+
+export async function authRefresh() {
+  return request<AuthResponse>('/auth/refresh', {
+    method: 'POST',
+    body: JSON.stringify({}),
+  })
+}
+
 export async function authSignOut() { return request<{ message: string }>('/auth/signout', { method: 'POST', body: JSON.stringify({}) }) }
 export async function requestPasswordReset(email: string) { return request<{ message: string }>('/auth/forgot-password', { method: 'POST', body: JSON.stringify({ email }) }) }
 export async function resetPassword(token: string, password: string) { return request<{ message: string }>('/auth/reset-password', { method: 'POST', body: JSON.stringify({ token, password }) }) }
@@ -74,12 +95,38 @@ export async function deleteChat(chatId: number, studentId: number) { return req
 export interface StudentDocument { id: number; document_name: string; file_size_bytes: number | null; total_pages: number; status: 'processing' | 'processed' | 'failed'; created_at: string }
 export interface DocumentsResponse { student_id: number; documents: StudentDocument[]; total_documents: number }
 export async function getDocuments(studentId: number, chatId: number) { return request<DocumentsResponse>(`/documents?student_id=${studentId}&chat_id=${chatId}`) }
-export async function uploadDocument(studentId: number, chatId: number, file: File) {
-  const formData = new FormData(); formData.append('student_id', String(studentId)); formData.append('chat_id', String(chatId)); formData.append('file', file)
-  const csrf = await csrfHeaders('POST')
-  const response = await fetch(`${API_BASE_URL}/documents/upload`, { method: 'POST', credentials: 'include', headers: csrf, body: formData })
+
+export async function uploadDocument(
+  studentId: number,
+  chatId: number,
+  file: File,
+) {
+  const formData = new FormData()
+  formData.append('student_id', String(studentId))
+  formData.append('chat_id', String(chatId))
+  formData.append('file', file)
+
+  const response = await fetch(`${API_BASE_URL}/documents/upload`, {
+    method: 'POST',
+    credentials: 'include',
+    body: formData,
+  })
+
   const data = await response.json().catch(() => ({}))
-  if (!response.ok) throw new Error(data.detail || `Upload failed (${response.status})`)
-  return data as { message: string; document_id: number; document_name: string; total_pages: number; chunks_created: number; embedding_dimensions: number; status: StudentDocument['status'] }
+
+  if (!response.ok) {
+    throw new Error(data.detail || `Upload failed (${response.status})`)
+  }
+
+  return data as {
+    message: string
+    document_id: number
+    document_name: string
+    total_pages: number
+    chunks_created: number
+    embedding_dimensions: number
+    status: StudentDocument['status']
+  }
 }
+
 export async function deleteDocument(documentId: number, studentId: number) { return request<{ message: string; document_id: number; document_name: string }>(`/documents/${documentId}?student_id=${studentId}`, { method: 'DELETE' }) }

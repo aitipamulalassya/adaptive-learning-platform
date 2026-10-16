@@ -54,7 +54,7 @@ FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:5173").rstrip("/")
 AUTH_COOKIE_NAME = "adaptive_access"
 REFRESH_COOKIE_NAME = "adaptive_refresh"
 REFRESH_TOKEN_TTL_SECONDS = 60 * 60 * 24 * 7
-CSRF_COOKIE_NAME = "adaptive_csrf"
+
 
 
 # ---------- PDF processing and embeddings ----------
@@ -395,7 +395,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Authentication: standard JWT in an HttpOnly cookie + double-submit CSRF protection.
+# Authentication: standard JWT in an HttpOnly cookie + double-submit CSRF protection.Generating JWT authentication tokens
 def _issue_token(student_id: int, token_type: str = "access") -> str:
     now = int(time.time())
     ttl = REFRESH_TOKEN_TTL_SECONDS if token_type == "refresh" else AUTH_TOKEN_TTL_SECONDS
@@ -405,7 +405,7 @@ def _issue_token(student_id: int, token_type: str = "access") -> str:
         algorithm="HS256",
     )
 
-
+#checks whether the token is valid. verify jwt token.
 def _verify_token(token: str, expected_type: str = "access") -> dict | None:
     try:
         claims = jwt.decode(token, AUTH_SECRET, algorithms=["HS256"], issuer="adaptive-learning-platform", options={"require": ["sub", "exp", "iat", "iss", "token_type"]})
@@ -413,9 +413,9 @@ def _verify_token(token: str, expected_type: str = "access") -> dict | None:
     except jwt.PyJWTError:
         return None
 
-
+#Setting authentication cookies.creates the tokens and places them in browser cookies.
 def _set_auth_cookies(response: Response, student_id: int, include_refresh: bool = True) -> None:
-    csrf_token = secrets.token_urlsafe(32)
+    
     response.set_cookie(
         AUTH_COOKIE_NAME, _issue_token(student_id, "access"), httponly=True, secure=COOKIE_SECURE,
         samesite=COOKIE_SAMESITE, max_age=AUTH_TOKEN_TTL_SECONDS, path="/",
@@ -425,103 +425,178 @@ def _set_auth_cookies(response: Response, student_id: int, include_refresh: bool
             REFRESH_COOKIE_NAME, _issue_token(student_id, "refresh"), httponly=True, secure=COOKIE_SECURE,
             samesite=COOKIE_SAMESITE, max_age=REFRESH_TOKEN_TTL_SECONDS, path="/",
         )
-    response.set_cookie(
-        CSRF_COOKIE_NAME, csrf_token, httponly=False, secure=COOKIE_SECURE,
-        samesite=COOKIE_SAMESITE, max_age=REFRESH_TOKEN_TTL_SECONDS, path="/",
-    )
+    
 
 
 def _clear_auth_cookies(response: Response) -> None:
     response.delete_cookie(AUTH_COOKIE_NAME, path="/", secure=COOKIE_SECURE, httponly=True, samesite=COOKIE_SAMESITE)
     response.delete_cookie(REFRESH_COOKIE_NAME, path="/", secure=COOKIE_SECURE, httponly=True, samesite=COOKIE_SAMESITE)
-    response.delete_cookie(CSRF_COOKIE_NAME, path="/", secure=COOKIE_SECURE, httponly=False, samesite=COOKIE_SAMESITE)
+   
+
+
 
 
 @app.middleware("http")
 async def require_authentication(request: Request, call_next):
+    if request.method == "OPTIONS":
+        return await call_next(request)
     path = request.url.path
+
+    # Routes that do not require an access token.
     public_exact = {
-        "/", "/health", "/db-health", "/auth/csrf", "/auth/signin", "/auth/signup",
-        "/auth/forgot-password", "/auth/reset-password", "/auth/refresh", "/topics", "/assessments",
-        "/test-catalog", "/openapi.json", "/docs", "/redoc",
+        "/",
+        "/health",
+        "/db-health",
+        "/auth/signin",
+        "/auth/signup",
+        "/auth/forgot-password",
+        "/auth/reset-password",
+        "/auth/refresh",
+        "/topics",
+        "/assessments",
+        "/test-catalog",
+        "/openapi.json",
+        "/docs",
+        "/redoc",
     }
-    if request.method == "OPTIONS" or path in public_exact or path.startswith("/docs/"):
-        # CSRF is still required on all unsafe methods, including public auth forms.
-        if request.method not in {"GET", "HEAD", "OPTIONS"} and path not in {"/auth/csrf"}:
-            csrf_cookie = request.cookies.get(CSRF_COOKIE_NAME, "")
-            csrf_header = request.headers.get("x-csrf-token", "")
-            if not csrf_cookie or not csrf_header or not hmac.compare_digest(csrf_cookie, csrf_header):
-                from starlette.responses import JSONResponse
-                return JSONResponse(status_code=403, content={"detail": "CSRF validation failed. Refresh the page and try again."})
+
+    # Allow public routes before checking authentication.
+    if path in public_exact:
         return await call_next(request)
 
+    # Validate the access token from the HttpOnly cookie.
     token = request.cookies.get(AUTH_COOKIE_NAME, "")
     claims = _verify_token(token) if token else None
+
     if not claims:
         from starlette.responses import JSONResponse
-        return JSONResponse(status_code=401, content={"detail": "Please sign in to continue."})
 
-    if request.method not in {"GET", "HEAD", "OPTIONS"}:
-        csrf_cookie = request.cookies.get(CSRF_COOKIE_NAME, "")
-        csrf_header = request.headers.get("x-csrf-token", "")
-        if not csrf_cookie or not csrf_header or not hmac.compare_digest(csrf_cookie, csrf_header):
-            from starlette.responses import JSONResponse
-            return JSONResponse(status_code=403, content={"detail": "CSRF validation failed. Refresh the page and try again."})
+        return JSONResponse(
+            status_code=401,
+            content={"detail": "Please sign in to continue."},
+        )
 
+    # Get the authenticated student's ID from the verified token.
     try:
         authenticated_student_id = int(claims["sub"])
         request.state.student_id = authenticated_student_id
     except (KeyError, ValueError, TypeError):
         from starlette.responses import JSONResponse
-        return JSONResponse(status_code=401, content={"detail": "Invalid authentication token."})
 
-    # Prevent a signed-in student from substituting another student's ID
-    # in URL paths, query parameters, JSON bodies, or multipart form fields.
+        return JSONResponse(
+            status_code=401,
+            content={"detail": "Invalid authentication token."},
+        )
+
+    # Prevent access to another student's data through URL paths
+    # and query parameters.
     requested_ids = list(request.query_params.getlist("student_id"))
+
     student_path_match = re.match(r"^/students/(\d+)(?:/|$)", path)
+
     if student_path_match:
         requested_ids.append(student_path_match.group(1))
+
     for requested_id in requested_ids:
         try:
             if int(requested_id) != authenticated_student_id:
                 from starlette.responses import JSONResponse
-                return JSONResponse(status_code=403, content={"detail": "You can only access your own student data."})
+
+                return JSONResponse(
+                    status_code=403,
+                    content={
+                        "detail": "You can only access your own student data."
+                    },
+                )
         except (ValueError, TypeError):
             from starlette.responses import JSONResponse
-            return JSONResponse(status_code=400, content={"detail": "Invalid student_id."})
 
+            return JSONResponse(
+                status_code=400,
+                content={"detail": "Invalid student_id."},
+            )
+
+    # Check student_id in JSON request bodies.
     if request.method in {"POST", "PUT", "PATCH", "DELETE"}:
         content_type = request.headers.get("content-type", "").lower()
+
         if "application/json" in content_type:
             raw_body = await request.body()
+
             try:
                 payload = json.loads(raw_body) if raw_body else None
             except (json.JSONDecodeError, UnicodeDecodeError):
                 payload = None
+
             if isinstance(payload, dict) and payload.get("student_id") is not None:
                 try:
                     if int(payload["student_id"]) != authenticated_student_id:
                         from starlette.responses import JSONResponse
-                        return JSONResponse(status_code=403, content={"detail": "You can only access your own student data."})
+
+                        return JSONResponse(
+                            status_code=403,
+                            content={
+                                "detail": "You can only access your own student data."
+                            },
+                        )
                 except (ValueError, TypeError):
                     from starlette.responses import JSONResponse
-                    return JSONResponse(status_code=400, content={"detail": "Invalid student_id."})
+
+                    return JSONResponse(
+                        status_code=400,
+                        content={"detail": "Invalid student_id."},
+                    )
+
+            # Make the body available to FastAPI after reading it here.
             async def receive_json_body():
-                return {"type": "http.request", "body": raw_body, "more_body": False}
+                return {
+                    "type": "http.request",
+                    "body": raw_body,
+                    "more_body": False,
+                }
+
             request._receive = receive_json_body
+
+        # Check student_id in multipart form submissions.
         elif "multipart/form-data" in content_type:
             raw_body = await request.body()
-            match = re.search(rb'name="student_id"\r?\n\r?\n([^\r\n-]+)', raw_body)
+
+            match = re.search(
+                rb'name="student_id"\r?\n\r?\n([^\r\n-]+)',
+                raw_body,
+            )
+
             if match:
                 try:
-                    if int(match.group(1).decode().strip()) != authenticated_student_id:
+                    submitted_student_id = int(
+                        match.group(1).decode().strip()
+                    )
+
+                    if submitted_student_id != authenticated_student_id:
                         from starlette.responses import JSONResponse
-                        return JSONResponse(status_code=403, content={"detail": "You can only access your own student data."})
+
+                        return JSONResponse(
+                            status_code=403,
+                            content={
+                                "detail": "You can only access your own student data."
+                            },
+                        )
                 except (ValueError, UnicodeDecodeError):
                     from starlette.responses import JSONResponse
-                    return JSONResponse(status_code=400, content={"detail": "Invalid student_id."})
+
+                    return JSONResponse(
+                        status_code=400,
+                        content={"detail": "Invalid student_id."},
+                    )
+
+            # Make the multipart body available to FastAPI.
             async def receive_multipart_body():
-                return {"type": "http.request", "body": raw_body, "more_body": False}
+                return {
+                    "type": "http.request",
+                    "body": raw_body,
+                    "more_body": False,
+                }
+
             request._receive = receive_multipart_body
 
     return await call_next(request)
@@ -575,13 +650,6 @@ def _student_payload(student: dict) -> dict:
     return {"student": {"id": int(student["id"]), "name": student["name"], "email": student["email"]}}
 
 
-@app.get("/auth/csrf")
-def get_csrf_token(response: Response, request: Request):
-    token = request.cookies.get(CSRF_COOKIE_NAME)
-    if not token:
-        token = secrets.token_urlsafe(32)
-        response.set_cookie(CSRF_COOKIE_NAME, token, httponly=False, secure=COOKIE_SECURE, samesite=COOKIE_SAMESITE, max_age=AUTH_TOKEN_TTL_SECONDS, path="/")
-    return {"csrf_token": token}
 
 
 @app.post("/auth/signup", status_code=201)
@@ -615,14 +683,43 @@ def sign_in(body: SignInBody, response: Response):
     return _student_payload(student)
 
 
+
 @app.post("/auth/refresh")
 def refresh_authentication(request: Request, response: Response):
-    claims = _verify_token(request.cookies.get(REFRESH_COOKIE_NAME, ""), "refresh")
+    claims = _verify_token(
+        request.cookies.get(REFRESH_COOKIE_NAME, ""),
+        "refresh",
+    )
+
     if not claims:
         _clear_auth_cookies(response)
-        raise HTTPException(status_code=401, detail="Your session has expired. Please sign in again.")
-    _set_auth_cookies(response, int(claims["sub"]), include_refresh=False)
-    return {"message": "Session refreshed."}
+        raise HTTPException(
+            status_code=401,
+            detail="Your session has expired. Please sign in again.",
+        )
+
+    student_id = int(claims["sub"])
+
+    with get_connection() as connection:
+        student = connection.execute(
+            """
+            SELECT id, name, email
+            FROM students
+            WHERE id = %s
+            """,
+            (student_id,),
+        ).fetchone()
+
+    if not student:
+        _clear_auth_cookies(response)
+        raise HTTPException(
+            status_code=401,
+            detail="Account not found. Please sign in again.",
+        )
+
+    _set_auth_cookies(response, student_id, include_refresh=False)
+
+    return _student_payload(student)
 
 
 @app.post("/auth/signout")
@@ -631,13 +728,6 @@ def sign_out(response: Response):
     return {"message": "Signed out successfully."}
 
 
-@app.get("/auth/me")
-def auth_me(request: Request):
-    with get_connection() as connection:
-        student = connection.execute("SELECT id, name, email FROM students WHERE id = %s", (request.state.student_id,)).fetchone()
-    if not student:
-        raise HTTPException(status_code=401, detail="Account not found. Please sign in again.")
-    return _student_payload(student)
 
 
 @app.get("/auth/profile")
@@ -1086,6 +1176,7 @@ WHERE id = %s
         "results": results,
 
     }
+#previous performance choose dificulty peformance here means curr /answer *100;
 
 @app.get("/students/{student_id}/adaptive-questions")
 
@@ -1344,9 +1435,8 @@ def get_weak_topics(student_id: int):
         "topic_performance": topics,
 
     }
-
+#recommandation based on topic performance
 @app.get("/students/{student_id}/recommendations")
-
 def get_learning_recommendations(student_id: int):
 
     with get_connection() as connection:
@@ -1705,7 +1795,7 @@ def ask_ai_tutor(request: TutorQuestion):
     # Do not discard every passage just because its score is below 0.30.
         relevant_chunks = retrieved_chunks
 
-    # Initial threshold; tune it after evaluating retrieval quality.
+   
 
     
 
@@ -1771,7 +1861,7 @@ Passage:
 
     # 4. Ask Gemini to answer using evidence without inventing citations.
     prompt = f"""
-You are StudyMind AI, a friendly and intelligent learning assistant.
+You are AdaptiveLearning AI, a friendly and intelligent learning assistant.
 
 PERSONALITY AND STYLE:
 - Be natural, clear, supportive, and conversational.
@@ -1866,19 +1956,6 @@ Write the answer now. Make it directly useful to the student.
             detail="The AI tutor could not generate a response. Check the backend logs.",
         ) from exc
 
-        raise HTTPException(
-
-            status_code=502,
-
-            detail=(
-
-                "Gemini request failed. Check the API key, model "
-
-                "availability, network, and usage limits."
-
-            ),
-
-        ) from exc
 
 # ---------- Test experience APIs (added without removing existing endpoints) ----------
 
@@ -3283,7 +3360,7 @@ def upload_document(
 
 # ---------- Document Management APIs ----------
 
-@app.get("/documents")
+
 
 @app.get("/documents")
 
@@ -3418,7 +3495,7 @@ def delete_document(document_id: int, student_id: int):
         "document_name": document["document_name"],
 
     }
-# Add this endpoint to backend/main.py after the existing test APIs.
+
 # It reads existing assessment records; no new tables are needed.
 
 @app.get("/students/{student_id}/dashboard")
