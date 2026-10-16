@@ -3049,353 +3049,177 @@ def delete_chat(chat_id: int, student_id: int):
 # ---------- PDF Upload and Embedding Storage ----------
 
 @app.post("/documents/upload")
-
 def upload_document(
-
     student_id: int = Form(..., gt=0),
-
     chat_id: int = Form(..., gt=0),
-
     file: UploadFile = File(...),
-
 ):
-
+    """Process a PDF in small batches to limit peak memory use."""
     if not file.filename or not file.filename.lower().endswith(".pdf"):
+        raise HTTPException(status_code=400, detail="Please upload a PDF file.")
 
-        raise HTTPException(
+    # FastAPI's UploadFile uses a seekable spooled file. Determine its size
+    # without creating a second in-memory copy of the entire PDF.
+    try:
+        file.file.seek(0, 2)
+        file_size_bytes = file.file.tell()
+        file.file.seek(0)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="Could not read the uploaded PDF.") from exc
 
-            status_code=400,
+    if file_size_bytes == 0:
+        raise HTTPException(status_code=400, detail="The uploaded PDF is empty.")
 
-            detail="Please upload a PDF file.",
-
-        )
-
-    pdf_bytes = file.file.read()
-
-    if not pdf_bytes:
-
-        raise HTTPException(
-
-            status_code=400,
-
-            detail="The uploaded PDF is empty.",
-
-        )
-
-    # Verify that the student exists.
-
-      # Verify that the student and chat exist and belong together.
-
-        # Verify that the student and chat belong together.
-
+    # Preserve the existing ownership checks.
     with get_connection() as connection:
-
         student = connection.execute(
-
-            "SELECT id FROM students WHERE id = %s",
-
-            (student_id,),
-
+            "SELECT id FROM students WHERE id = %s", (student_id,)
         ).fetchone()
-
         if not student:
-
-            raise HTTPException(
-
-                status_code=404,
-
-                detail="Student not found.",
-
-            )
+            raise HTTPException(status_code=404, detail="Student not found.")
 
         chat = connection.execute(
-
             """
-
             SELECT id
-
             FROM public.conversations
-
             WHERE id = %s AND student_id = %s
-
             """,
-
             (chat_id, student_id),
-
         ).fetchone()
-
         if not chat:
-
-            raise HTTPException(
-
-                status_code=404,
-
-                detail="Chat not found for this student.",
-
-            )
-
-    # Extract text page by page to preserve source page numbers.
+            raise HTTPException(status_code=404, detail="Chat not found for this student.")
 
     try:
-
-        reader = PdfReader(io.BytesIO(pdf_bytes))
-
+        file.file.seek(0)
+        reader = PdfReader(file.file)
         if reader.is_encrypted:
-
-            raise HTTPException(
-
-                status_code=400,
-
-                detail="Encrypted PDFs are not supported.",
-
-            )
-
+            raise HTTPException(status_code=400, detail="Encrypted PDFs are not supported.")
         total_pages = len(reader.pages)
-
-        page_chunks = []
-
-        for page_number, page in enumerate(reader.pages, start=1):
-
-            page_text = page.extract_text() or ""
-
-            chunks = split_text_into_chunks(page_text)
-
-            for chunk in chunks:
-
-                page_chunks.append({
-
-                    "page_number": page_number,
-
-                    "chunk_text": chunk,
-
-                })
-
     except HTTPException:
-
         raise
-
     except Exception as exc:
+        raise HTTPException(status_code=400, detail="Could not read this PDF file.") from exc
 
-        raise HTTPException(
-
-            status_code=400,
-
-            detail="Could not read this PDF file.",
-
-        ) from exc
-
-    if not page_chunks:
-
-        raise HTTPException(
-
-            status_code=400,
-
-            detail="No readable text was found in this PDF.",
-
-        )
-
-    # Generate 384-dimensional embeddings.
+    # Small batches keep chunk text and embedding arrays from growing with the
+    # size of the entire document. The model's internal encode batch is smaller
+    # still, to reduce transient RAM usage on low-memory hosting.
+    CHUNK_BATCH_SIZE = 8
+    MODEL_BATCH_SIZE = 4
+    batch = []
+    chunks_created = 0
+    embedding_dimensions = 0
+    document_id = None
 
     try:
-
         model = get_embedding_model()
 
-        chunks = [item["chunk_text"] for item in page_chunks]
-
-        embeddings = model.encode(
-
-            chunks,
-
-            normalize_embeddings=True,
-
-            show_progress_bar=False,
-
-        )
-
-    except Exception as exc:
-
-        raise HTTPException(
-
-            status_code=500,
-
-            detail="Could not generate document embeddings.",
-
-        ) from exc
-
-    # Save the document and all its chunks in one transaction.
-
-    # Save the document and all its chunks in one transaction.
-
-    try:
-
         with get_connection() as connection:
-
             with connection.transaction():
-
                 document = connection.execute(
-
                     """
-
                     INSERT INTO public.documents (
-
-                        student_id,
-
-                        chat_id,
-
-                        document_name,
-
-                        file_size_bytes,
-
-                        total_pages,
-
-                        status
-
+                        student_id, chat_id, document_name, file_size_bytes,
+                        total_pages, status
                     )
-
                     VALUES (%s, %s, %s, %s, %s, 'processing')
-
                     RETURNING id
-
                     """,
-
-                    (
-
-                        student_id,
-
-                        chat_id,
-
-                        file.filename,
-
-                        len(pdf_bytes),
-
-                        total_pages,
-
-                    ),
-
+                    (student_id, chat_id, file.filename, file_size_bytes, total_pages),
                 ).fetchone()
-
                 document_id = document["id"]
 
-                for chunk_index, (item, embedding) in enumerate(
+                def save_chunk_batch(items):
+                    nonlocal chunks_created, embedding_dimensions
+                    if not items:
+                        return
 
-                    zip(page_chunks, embeddings)
-
-                ):
-
-                    vector_literal = (
-
-                        "["
-
-                        + ",".join(
-
-                            str(float(value)) for value in embedding
-
-                        )
-
-                        + "]"
-
+                    texts = [item["chunk_text"] for item in items]
+                    embeddings = model.encode(
+                        texts,
+                        batch_size=MODEL_BATCH_SIZE,
+                        normalize_embeddings=True,
+                        show_progress_bar=False,
+                        convert_to_numpy=True,
                     )
+                    embedding_dimensions = int(embeddings.shape[1])
 
-                    connection.execute(
-
-                        """
-
-                        INSERT INTO public.document_chunks (
-
-                            document_id,
-
-                            chunk_index,
-
-                            page_number,
-
-                            chunk_text,
-
-                            embedding,
-
-                            metadata
-
+                    for item, embedding in zip(items, embeddings):
+                        vector_literal = "[" + ",".join(
+                            str(float(value)) for value in embedding
+                        ) + "]"
+                        connection.execute(
+                            """
+                            INSERT INTO public.document_chunks (
+                                document_id, chunk_index, page_number,
+                                chunk_text, embedding, metadata
+                            )
+                            VALUES (%s, %s, %s, %s, %s::vector, %s::jsonb)
+                            """,
+                            (
+                                document_id,
+                                chunks_created,
+                                item["page_number"],
+                                item["chunk_text"],
+                                vector_literal,
+                                json.dumps({
+                                    "student_id": student_id,
+                                    "chunk_size": len(item["chunk_text"]),
+                                }),
+                            ),
                         )
+                        chunks_created += 1
 
-                        VALUES (
+                    # Let the arrays and text list be reclaimed before the next batch.
+                    del embeddings, texts
 
-                            %s, %s, %s, %s, %s::vector, %s::jsonb
+                for page_number, page in enumerate(reader.pages, start=1):
+                    page_text = page.extract_text() or ""
+                    for chunk in split_text_into_chunks(page_text):
+                        batch.append({"page_number": page_number, "chunk_text": chunk})
+                        if len(batch) >= CHUNK_BATCH_SIZE:
+                            save_chunk_batch(batch)
+                            batch.clear()
 
-                        )
+                if batch:
+                    save_chunk_batch(batch)
+                    batch.clear()
 
-                        """,
-
-                        (
-
-                            document_id,
-
-                            chunk_index,
-
-                            item["page_number"],
-
-                            item["chunk_text"],
-
-                            vector_literal,
-
-                            json.dumps({
-
-                                "student_id": student_id,
-
-                                "chunk_size": len(item["chunk_text"]),
-
-                            }),
-
-                        ),
-
+                if chunks_created == 0:
+                    raise HTTPException(
+                        status_code=400,
+                        detail="No readable text was found in this PDF.",
                     )
 
                 connection.execute(
-
-                    """
-
-                    UPDATE public.documents
-
-                    SET status = 'processed'
-
-                    WHERE id = %s
-
-                    """,
-
+                    "UPDATE public.documents SET status = 'processed' WHERE id = %s",
                     (document_id,),
-
                 )
 
+    except HTTPException:
+        raise
     except Exception as exc:
-
         raise HTTPException(
-
             status_code=500,
-
             detail=(
-
-                "Could not save the document and its chunks. "
-
-                "Check the database schema and server logs."
-
+                "Could not process or save the document. Check the database schema "
+                "and server logs."
             ),
-
         ) from exc
+    finally:
+        # Avoid retaining the uploaded file's reader/file handles after processing.
+        try:
+            file.file.seek(0)
+        except Exception:
+            pass
 
     return {
-
         "message": "PDF processed successfully.",
-
         "document_id": document_id,
-
         "document_name": file.filename,
-
         "total_pages": total_pages,
-
-        "chunks_created": len(page_chunks),
-
-        "embedding_dimensions": int(embeddings.shape[1]),
-
+        "chunks_created": chunks_created,
+        "embedding_dimensions": embedding_dimensions,
         "status": "processed",
-
     }
 
 # ---------- Document Management APIs ----------
